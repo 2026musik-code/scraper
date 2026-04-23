@@ -39,8 +39,72 @@ async function fetchAndExtractDramas(keyword: string) {
     return dramas;
 }
 
+import * as cheerio from 'cheerio';
+
 // ----------------------------------------------------
-// 1. API: AMBIL LIST DRAMA BERDASARKAN KATEGORI (AJAX)
+// 1. API: AMBIL MAIN HOME PAGE MELOLO
+// ----------------------------------------------------
+app.get('/api/home', async (c) => {
+    try {
+        const response = await fetch('https://melolo.com/id', {
+            headers: {
+              'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+              'accept-language': 'id-ID',
+              'cache-control': 'max-age=0',
+              'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
+              'sec-ch-ua-mobile': '?1',
+              'sec-ch-ua-platform': '"Android"',
+              'sec-fetch-dest': 'document',
+              'sec-fetch-mode': 'navigate',
+              'sec-fetch-site': 'same-origin',
+              'upgrade-insecure-requests': '1',
+              'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36'
+            }
+        });
+        
+        const htmlContent = await response.text();
+        const $ = cheerio.load(htmlContent);
+        
+        const sections: { title: string, dramas: any[] }[] = [];
+        
+        $('h2, h3').each((i, el) => {
+          let title = $(el).text().trim();
+          if (title && !title.includes('Kategori') && !title.includes('Pusat') && !title.includes('Pilihan Editor')) {
+            const container = $(el).parent().parent().parent(); 
+            const dramas: any[] = [];
+            container.find('a[href*="/id/dramas/"]').each((j, a) => {
+               const url = $(a).attr('href');
+               const parentDiv = $(a).parent();
+               
+               const poster = $(a).find('img').attr('src') || parentDiv.find('img').attr('src');
+               const idMatch = url?.match(/\/id\/dramas\/([^"?/]+)/);
+               if (idMatch) {
+                   const id = idMatch[1];
+                   const dramaTitle = id.replace(/-/g, ' ');
+                   if (!dramas.find(d => d.id === id) && poster) {
+                     dramas.push({ 
+                       url: url?.startsWith('http') ? url : `https://melolo.com${url}`, 
+                       id, 
+                       title: dramaTitle, 
+                       poster 
+                     });
+                   }
+               }
+            });
+            if (dramas.length > 0) {
+              sections.push({ title, dramas });
+            }
+          }
+        });
+
+        return c.json({ success: true, data: sections });
+    } catch(err: any) {
+        return c.json({ success: false, error: err.message }, 500);
+    }
+})
+
+// ----------------------------------------------------
+// 2. API: AMBIL LIST DRAMA BERDASARKAN KATEGORI (AJAX)
 // ----------------------------------------------------
 app.get('/api/dramas', async (c) => {
     const category = c.req.query('c') || 'ceo'
@@ -110,83 +174,73 @@ app.get('/', (c) => {
 
         <!-- Render Container Kategori -->
         <div id="categories-container" class="max-w-7xl mx-auto px-4 lg:px-8 py-8 relative z-20 space-y-6">
+            <div class="text-center py-12" id="home-loading">
+                <div class="inline-block w-8 h-8 lg:w-10 lg:h-10 border-2 border-white/20 border-t-[#d4af37] rounded-full animate-spin"></div>
+                <p class="mt-3 text-xs lg:text-sm text-gray-500 font-bold uppercase tracking-widest">Memuat Konten Sedang Tren...</p>
+            </div>
             <!-- Injeksi via Javascript -->
         </div>
 
         <script>
-            // List Kategori Mewah yang akan diload otomasis
-            const categoryGroups = [
-                { id: 'ceo', name: 'Trending: CEO' },
-                { id: 'romance', name: 'Romantic Escapes' },
-                { id: 'revenge', name: 'Sweet Revenge' },
-                { id: 'werewolf', name: 'Alpha & Werewolf' }
-            ];
-
             const container = document.getElementById('categories-container');
+            const loading = document.getElementById('home-loading');
 
-            // Fungsi membuat DOM untuk Baris/Row Kategori
-            function createCategoryRow(category) {
+            function createCategoryRow(sectionData) {
                 const section = document.createElement('div');
                 section.className = 'w-full bg-[#0a0a0f] border border-[#d4af37]/20 rounded-2xl p-4 md:p-6 shadow-2xl';
+                
+                let dramasHtml = sectionData.dramas.map(drama => {
+                    const encodedPoster = encodeURIComponent(drama.poster);
+                    const encodedTitle = encodeURIComponent(drama.title);
+                    const encodedUrl = encodeURIComponent(drama.url);
+                    
+                    return \`<div class="snap-start shrink-0 w-32 md:w-40 lg:w-48 group relative rounded-xl overflow-hidden shadow-[0_0_15px_rgba(0,0,0,0.8)] bg-black border-2 border-white/10 transition duration-500 hover:scale-105 hover:border-[#d4af37] hover:shadow-[0_0_20px_rgba(212,175,55,0.3)] hover:-translate-y-2">
+                        <img src="\${drama.poster || 'https://via.placeholder.com/300x450?text=No+Image'}" 
+                            class="w-full h-full aspect-[2/3] object-cover transition duration-700 group-hover:opacity-40" loading="lazy" />
+                        
+                        <div class="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent p-4 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 transition duration-300">
+                            <h4 class="text-white font-bold leading-tight line-clamp-2 md:text-lg drop-shadow-lg capitalize text-sm">\${drama.title}</h4>
+                        </div>
+
+                        <a href="/scrape?url=\${encodedUrl}&poster=\${encodedPoster}&title=\${encodedTitle}" 
+                            class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300 z-10">
+                            <div class="w-12 h-12 rounded-full glass border border-white/20 flex items-center justify-center shadow-lg transform scale-50 group-hover:scale-100 transition duration-300 delay-100">
+                                <svg class="w-5 h-5 text-white ml-1" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4l12 6-12 6z"></path></svg>
+                            </div>
+                        </a>
+                    </div>\`;
+                }).join('');
+
                 section.innerHTML = \`<div class="flex justify-between items-center mb-5 gap-4">
-                        <h3 class="text-xl md:text-2xl font-bold border-l-4 border-[#d4af37] pl-3 tracking-wide truncate text-[#f5f5f5]">\${category.name}</h3>
-                        <a href="/search?q=\${category.id}" class="text-[10px] md:text-xs text-[#000] bg-gradient-to-r from-[#d4af37] to-[#FFD700] hover:scale-105 px-4 py-1.5 rounded-md font-bold uppercase tracking-wider transition whitespace-nowrap shadow-lg">Lihat Semua</a>
+                        <h3 class="text-xl md:text-2xl font-bold border-l-4 border-[#d4af37] pl-3 tracking-wide truncate text-[#f5f5f5]">\${sectionData.title}</h3>
                     </div>
-                    <div id="row-\${category.id}" class="flex overflow-x-auto gap-4 lg:gap-6 pb-4 pt-2 snap-x hide-scrollbar">
-                        \${generateSkeleton(6)}
+                    <div class="flex overflow-x-auto gap-4 lg:gap-6 pb-4 pt-2 snap-x hide-scrollbar">
+                        \${dramasHtml}
                     </div>\`;
                 return section;
             }
 
-            // Animasi Loading Palsu (Skeleton)
-            function generateSkeleton(count) {
-                return Array(count).fill(0).map(() => 
-                    \`<div class="snap-start shrink-0 w-32 md:w-40 lg:w-48 aspect-[2/3] bg-white/5 rounded-xl border border-white/10 animate-pulse"></div>\`
-                ).join('');
-            }
-
-            // Fungsi Ambil Data dari API Server kita sendiri
-            async function loadCategory(category) {
+            async function loadHome() {
                 try {
-                    const res = await fetch(\`/api/dramas?c=\${category.id}\`);
-                    const json = await res.json();
-                    
-                    const rowContainer = document.getElementById(\`row-\${category.id}\`);
-                    if(json.success && json.data.length > 0) {
-                        rowContainer.innerHTML = json.data.map(drama => {
-                            const encodedPoster = encodeURIComponent(drama.poster);
-                            const encodedTitle = encodeURIComponent(drama.title);
-                            const encodedUrl = encodeURIComponent(drama.url);
-                            
-                            return \`<div class="snap-start shrink-0 w-32 md:w-40 lg:w-48 group relative rounded-xl overflow-hidden shadow-[0_0_15px_rgba(0,0,0,0.8)] bg-black border-2 border-white/10 transition duration-500 hover:scale-105 hover:border-[#d4af37] hover:shadow-[0_0_20px_rgba(212,175,55,0.3)] hover:-translate-y-2">
-                                <img src="\${drama.poster || 'https://via.placeholder.com/300x450?text=No+Image'}" 
-                                    class="w-full h-full aspect-[2/3] object-cover transition duration-700 group-hover:opacity-40" loading="lazy" />
-                                
-                                <div class="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent p-4 flex flex-col justify-end translate-y-4 group-hover:translate-y-0 transition duration-300">
-                                    <h4 class="text-white font-bold leading-tight line-clamp-2 md:text-lg drop-shadow-lg capitalize text-sm">\${drama.title}</h4>
-                                </div>
-
-                                <a href="/scrape?url=\${encodedUrl}&poster=\${encodedPoster}&title=\${encodedTitle}" 
-                                    class="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300 z-10">
-                                    <div class="w-12 h-12 rounded-full glass border border-white/20 flex items-center justify-center shadow-lg transform scale-50 group-hover:scale-100 transition duration-300 delay-100">
-                                        <svg class="w-5 h-5 text-white ml-1" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4l12 6-12 6z"></path></svg>
-                                    </div>
-                                </a>
-                            </div>\`;
-                        }).join('');
-                    } else {
-                        rowContainer.innerHTML = \`<p class="text-sm text-gray-500 italic px-2">Drama tidak tersedia saat ini.</p>\`;
+                    const res = await fetch('/api/home');
+                    if (res.ok) {
+                        const json = await res.json();
+                        loading.style.display = 'none';
+                        if (json.success && json.data.length > 0) {
+                            json.data.forEach(section => {
+                                container.appendChild(createCategoryRow(section));
+                            });
+                        } else {
+                            container.innerHTML = \`<p class="text-center text-gray-500 mt-8">Gagal memuat atau tidak ada konten.</p>\`;
+                        }
                     }
                 } catch(e) {
-                    console.log('Error loading', category.id);
+                    loading.style.display = 'none';
+                    container.innerHTML = \`<p class="text-center text-red-500 mt-8">Terjadi kesalahan koneksi server.</p>\`;
                 }
             }
 
-            // Inisialisasi
-            categoryGroups.forEach(cat => {
-                container.appendChild(createCategoryRow(cat));
-                loadCategory(cat); // AJAX fetch
-            });
+            loadHome();
         </script>
     </body>
     </html>
@@ -404,16 +458,37 @@ app.get('/scrape', async (c) => {
                      <svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
                      Buka di Tab Baru
                  </a>
+                 <button id="enhanceToggle" onclick="toggleEnhance()" class="mt-2 w-full flex items-center justify-center gap-2 text-[10px] lg:text-xs font-bold uppercase tracking-wider bg-yellow-600 hover:bg-yellow-500 text-black py-2.5 lg:py-3 rounded-md lg:rounded-lg border border-yellow-400/50 transition">
+                     <svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                     Tingkatkan Kualitas Visual (AI Enhance)
+                 </button>
               </div>
           </div>
 
           <script>
              const episodes = ${raw(episodesJson)};
              let currentEps = 0;
+             let isEnhanced = false;
              const player = document.getElementById('mainPlayer');
              const epsGrid = document.getElementById('epsGrid');
              const rawLink = document.getElementById('rawLink');
              const downloadLink = document.getElementById('downloadLink');
+             const enhanceToggle = document.getElementById('enhanceToggle');
+
+             function toggleEnhance() {
+                 isEnhanced = !isEnhanced;
+                 if (isEnhanced) {
+                     player.style.filter = "contrast(1.1) saturate(1.2) brightness(1.05) drop-shadow(0 0 10px rgba(212,175,55,0.2))";
+                     enhanceToggle.classList.replace("bg-yellow-600", "bg-green-600");
+                     enhanceToggle.classList.replace("hover:bg-yellow-500", "hover:bg-green-500");
+                     enhanceToggle.innerHTML = '<svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Visual HD Aktif';
+                 } else {
+                     player.style.filter = "none";
+                     enhanceToggle.classList.replace("bg-green-600", "bg-yellow-600");
+                     enhanceToggle.classList.replace("hover:bg-green-500", "hover:bg-yellow-500");
+                     enhanceToggle.innerHTML = '<svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg> Tingkatkan Kualitas Visual (AI Enhance)';
+                 }
+             }
 
              function loadEpisode(index) {
                 currentEps = index;
