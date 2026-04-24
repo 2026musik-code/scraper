@@ -163,7 +163,7 @@ app.get('/', (c) => {
                 <h2 class="text-3xl md:text-5xl lg:text-6xl font-extrabold mb-6 leading-tight">Semua Drama Favoritmu,<br> <span class="luxury-gradient">Tanpa Batas.</span></h2>
                 
                 <form action="/scrape" method="GET" class="mt-4 flex flex-col sm:flex-row w-full max-w-lg mx-auto gap-3">
-                    <input type="text" name="url" placeholder="Paste URL Halaman Melolo disini..." required 
+                    <input type="text" name="url" placeholder="Paste URL Halaman Melolo / Dramabox disini..." required 
                         class="flex-1 glass bg-white/5 rounded-xl px-5 py-4 text-sm focus:outline-none border border-white/20 focus:border-[#d4af37] transition shadow-inner">
                     <button type="submit" class="luxury-btn font-bold px-8 py-4 rounded-xl text-sm transition transform hover:-translate-y-0.5 shadow-lg whitespace-nowrap">
                         Ekstrak Fitur
@@ -346,23 +346,71 @@ app.get('/search', async (c) => {
 app.get('/scrape', async (c) => {
   const targetUrl = c.req.query('url')
   const posterUrl = c.req.query('poster') || ''
-  const dramaTitle = c.req.query('title') || 'Exclusive Series'
+  let dramaTitle = c.req.query('title') || ''
 
   if (!targetUrl || typeof targetUrl !== 'string') return c.text("URL tidak boleh kosong!")
 
   try {
-    const response = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
-        "Referer": "https://melolo.com/"
+    let links: string[] = [];
+    let isHls = false;
+
+    if (targetUrl.includes('dramabox.com')) {
+      isHls = true;
+      
+      const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`;
+      const response = await fetch(proxyUrl);
+      const htmlContent = await response.text();
+      
+      // Coba ekstrak metadata dari __NEXT_DATA__
+      const nextDataMatch = htmlContent.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+      if (nextDataMatch) {
+          try {
+              const nextData = JSON.parse(nextDataMatch[1]);
+              const video = nextData.props.pageProps.video;
+              if (video) {
+                  dramaTitle = video.title || "Dramabox Series";
+                  // Chapter list is usually in video.chapterList
+                  if (video.chapterList && video.chapterList.length > 0) {
+                      links = video.chapterList.map((ch: any) => ch.hlsUrl || ch.url);
+                  }
+              }
+          } catch(e) {
+              console.error("Gagal parse NEXT_DATA", e);
+          }
       }
-    })
 
-    const htmlContent = await response.text()
+      // Fallback/tambahan jika NEXT_DATA tidak lengkap
+      if (links.length === 0) {
+          if (!dramaTitle) dramaTitle = "Dramabox Series";
+          let m3u8Links = Array.from(new Set(htmlContent.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/g) || []));
+          m3u8Links = m3u8Links.map(l => l.replace(/\\\//g, '/').replace(/\\u0026/g, '&'));
+          
+          const uniqueLinks: string[] = [];
+          const linkBases = new Set();
+          for (const link of m3u8Links) {
+              const base = link.split('?')[0];
+              if (!linkBases.has(base)) {
+                  linkBases.add(base);
+                  uniqueLinks.push(link);
+              }
+          }
+          links = uniqueLinks;
+      }
+    } else {
+      if (!dramaTitle) dramaTitle = "Exclusive Series";
+      const response = await fetch(targetUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+          "Referer": "https://melolo.com/"
+        }
+      })
 
-    const pattern = /https?:\/\/v\.melolo\.com\/[^"'\s\\]+\.mp4\?[^"'\s\\]+/g
-    let links = Array.from(new Set(htmlContent.match(pattern) || []))
-    links = links.map(l => l.replace(/\\\//g, '/').replace(/&amp;/g, '&'))
+      const htmlContent = await response.text()
+
+      const pattern = /https?:\/\/v\.melolo\.com\/[^"'\s\\]+\.mp4\?[^"'\s\\]+/g
+      links = Array.from(new Set(htmlContent.match(pattern) || []))
+      links = links.map(l => l.replace(/\\\//g, '/').replace(/&amp;/g, '&'))
+    }
 
     if (links.length === 0) {
       return c.html(html`
@@ -371,8 +419,8 @@ app.get('/scrape', async (c) => {
         <head><script src="https://cdn.tailwindcss.com"></script></head>
         <body class="bg-[#050505] text-white flex items-center justify-center min-h-screen">
             <div class="p-8 text-center border border-white/10 rounded-2xl bg-[#111]">
-                <h3 class="text-xl font-bold mb-2 text-red-400">Episode Terkunci (Premium)</h3>
-                <p class="text-gray-400 text-sm mb-6">Sistem Melolo melindungi video ini di sisi server.</p>
+                <h3 class="text-xl font-bold mb-2 text-red-400">Episode Terkunci / Tidak Ditemukan</h3>
+                <p class="text-gray-400 text-sm mb-6">Sistem merahasiakan video ini atau sedang dikunci pihak server.</p>
                 <a href="javascript:history.back()" class="px-6 py-2 bg-white text-black font-bold rounded-full">← Kembali</a>
             </div>
         </body>
@@ -390,6 +438,7 @@ app.get('/scrape', async (c) => {
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>${dramaTitle} - Player Premium</title>
           <script src="https://cdn.tailwindcss.com"></script>
+          <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
           <style>
             @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap');
             body { font-family: 'Outfit', sans-serif; background-color: #000; color: #fff; }
@@ -454,10 +503,17 @@ app.get('/scrape', async (c) => {
               <div class="p-4 lg:p-5 bg-black/40 border-t border-white/5 backdrop-blur shrink-0 pb-6 lg:pb-5">
                  <p class="text-[8px] lg:text-[10px] uppercase text-gray-500 font-bold tracking-widest mb-1.5 lg:mb-2 pl-1">Direct Stream Target :</p>
                  <input type="text" id="rawLink" readonly class="w-full bg-[#111] text-[#d4af37] text-[10px] p-2 rounded-md lg:rounded-lg border border-white/10 outline-none select-all focus:border-[#d4af37]/50 transition" onclick="this.select()">
-                 <a id="downloadLink" href="#" target="_blank" class="mt-2.5 lg:mt-3 w-full flex items-center justify-center gap-2 text-[10px] lg:text-xs font-bold uppercase tracking-wider bg-white/5 hover:bg-white/10 text-white py-2.5 lg:py-3 rounded-md lg:rounded-lg border border-white/10 transition">
-                     <svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-                     Buka di Tab Baru
-                 </a>
+                 <div class="flex flex-col md:flex-row gap-2 mt-2.5 lg:mt-3 mb-2">
+                     <a id="downloadLink" href="#" target="_blank" class="w-full relative flex items-center justify-center gap-2 text-[10px] lg:text-xs font-bold uppercase tracking-wider bg-white/5 hover:bg-white/10 text-white py-2.5 lg:py-3 rounded-md lg:rounded-lg border border-white/10 transition overflow-hidden">
+                         <svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                         Buka di Tab Baru
+                     </a>
+                     <a id="downloadBtn" href="#" download="video.mp4" class="w-full relative flex items-center justify-center gap-2 text-[10px] lg:text-xs font-bold uppercase tracking-wider bg-[#d4af37]/20 hover:bg-[#d4af37]/40 text-[#d4af37] py-2.5 lg:py-3 rounded-md lg:rounded-lg border border-[#d4af37]/50 transition overflow-hidden group">
+                         <div class="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-[#d4af37]/30 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]"></div>
+                         <svg class="w-3.5 h-3.5 lg:w-4 lg:h-4 z-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                         <span class="z-10">Unduh (Otomatis)</span>
+                     </a>
+                 </div>
                  <button id="enhanceToggle" onclick="toggleEnhance()" class="mt-2 w-full flex items-center justify-center gap-2 text-[10px] lg:text-xs font-bold uppercase tracking-wider bg-yellow-600 hover:bg-yellow-500 text-black py-2.5 lg:py-3 rounded-md lg:rounded-lg border border-yellow-400/50 transition">
                      <svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                      Tingkatkan Kualitas Visual (AI Enhance)
@@ -473,6 +529,7 @@ app.get('/scrape', async (c) => {
              const epsGrid = document.getElementById('epsGrid');
              const rawLink = document.getElementById('rawLink');
              const downloadLink = document.getElementById('downloadLink');
+             const downloadBtn = document.getElementById('downloadBtn');
              const enhanceToggle = document.getElementById('enhanceToggle');
 
              function toggleEnhance() {
@@ -489,16 +546,47 @@ app.get('/scrape', async (c) => {
                      enhanceToggle.innerHTML = '<svg class="w-3.5 h-3.5 lg:w-4 lg:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg> Tingkatkan Kualitas Visual (AI Enhance)';
                  }
              }
+             
+             const isHls = ${isHls ? "true" : "false"};
+             let hlsInstance = null;
 
              function loadEpisode(index) {
                 currentEps = index;
                 const link = episodes[index];
                 
-                player.src = "/proxy-video?url=" + encodeURIComponent(link);
-                player.play().catch(e => console.log("Autoplay issue"));
-
                 rawLink.value = link;
                 downloadLink.href = link;
+                
+                let sourceUrl = "/proxy-video?url=" + encodeURIComponent(link);
+                if (isHls) sourceUrl = link;
+                
+                // Set download href to the proxy url for proxy based items
+                if (downloadBtn) {
+                    if (isHls && link.includes('.m3u8')) {
+                       // M3U8 cannot be simply bulk downloaded via a tag
+                       downloadBtn.href = link;
+                    } else {
+                       downloadBtn.href = sourceUrl;
+                    }
+                }
+
+                if (isHls && sourceUrl.includes('.m3u8')) {
+                    if (Hls.isSupported()) {
+                        if (hlsInstance) hlsInstance.destroy();
+                        hlsInstance = new Hls();
+                        hlsInstance.loadSource(sourceUrl);
+                        hlsInstance.attachMedia(player);
+                        hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
+                            player.play().catch(e => console.log("Autoplay issue"));
+                        });
+                    } else if (player.canPlayType('application/vnd.apple.mpegurl')) {
+                        player.src = sourceUrl;
+                        player.play().catch(e => console.log("Autoplay issue"));
+                    }
+                } else {
+                    player.src = sourceUrl;
+                    player.play().catch(e => console.log("Autoplay issue"));
+                }
 
                 document.querySelectorAll('.eps-btn').forEach((btn, i) => {
                     if (i === index) {
