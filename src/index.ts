@@ -550,6 +550,84 @@ app.get('/scrape', async (c) => {
              const isHls = ${isHls ? "true" : "false"};
              let hlsInstance = null;
 
+             async function downloadHlsStream(m3u8Url, filename) {
+                 const originalText = downloadBtn.innerHTML;
+                 try {
+                     downloadBtn.style.pointerEvents = 'none';
+                     downloadBtn.innerHTML = '<span class="z-10">Memulai Unduhan...</span>';
+                     
+                     // 1. Fetch M3U8
+                     const res = await fetch(m3u8Url);
+                     const playlist = await res.text();
+                     
+                     // 2. Extract TS segments and preserve query params
+                     const urlObj = new URL(m3u8Url);
+                     const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+                     const queryParams = urlObj.search;
+                     
+                     const lines = playlist.split('\\n');
+                     const tsUrls = [];
+                     
+                     for (let line of lines) {
+                         line = line.trim();
+                         if (line && !line.startsWith('#')) {
+                             let segmentUrl = line;
+                             if (!segmentUrl.startsWith('http')) {
+                                 segmentUrl = baseUrl + segmentUrl;
+                                 if (!segmentUrl.includes('?') && queryParams) {
+                                     segmentUrl += queryParams;
+                                 }
+                             }
+                             tsUrls.push(segmentUrl);
+                         }
+                     }
+                     
+                     if (tsUrls.length === 0) {
+                         throw new Error("Tidak menemukan segmen video (.ts)");
+                     }
+
+                     // 3. Download segments sequentially to avoid memory crashes
+                     downloadBtn.innerHTML = \`<span class="z-10">Mengunduh 0 / \${tsUrls.length}</span>\`;
+                     let buffers = [];
+                     let downloaded = 0;
+                     
+                     for (let i = 0; i < tsUrls.length; i++) {
+                         const tsRes = await fetch(tsUrls[i]);
+                         if (!tsRes.ok) throw new Error(\`Gagal unduh segmen \${i+1}\`);
+                         const arrayBuffer = await tsRes.arrayBuffer();
+                         buffers.push(arrayBuffer);
+                         downloaded++;
+                         downloadBtn.innerHTML = \`<span class="z-10">Mengunduh \${Math.floor((downloaded/tsUrls.length)*100)}% (\${downloaded}/\${tsUrls.length})</span>\`;
+                     }
+
+                     // 4. Merge buffers and download
+                     downloadBtn.innerHTML = '<span class="z-10">Memproses File...</span>';
+                     const blob = new Blob(buffers, { type: 'video/mp2t' });
+                     const downloadUrl = URL.createObjectURL(blob);
+                     
+                     const a = document.createElement('a');
+                     a.href = downloadUrl;
+                     a.download = filename;
+                     document.body.appendChild(a);
+                     a.click();
+                     setTimeout(() => {
+                         document.body.removeChild(a);
+                         URL.revokeObjectURL(downloadUrl);
+                     }, 100);
+                     
+                     downloadBtn.innerHTML = '<span class="z-10 text-green-400">Unduhan Selesai ✓</span>';
+                 } catch(e) {
+                     console.error(e);
+                     alert("Gagal mengunduh: " + e.message);
+                     downloadBtn.innerHTML = '<span class="z-10 text-red-500">Gagal Mengunduh!</span>';
+                 } finally {
+                     setTimeout(() => {
+                         downloadBtn.style.pointerEvents = 'auto';
+                         downloadBtn.innerHTML = originalText;
+                     }, 3000);
+                 }
+             }
+
              function loadEpisode(index) {
                 currentEps = index;
                 const link = episodes[index];
@@ -560,13 +638,20 @@ app.get('/scrape', async (c) => {
                 let sourceUrl = "/proxy-video?url=" + encodeURIComponent(link);
                 if (isHls) sourceUrl = link;
                 
-                // Set download href to the proxy url for proxy based items
+                 // Set download href to the proxy url for proxy based items
                 if (downloadBtn) {
                     if (isHls && link.includes('.m3u8')) {
-                       // M3U8 cannot be simply bulk downloaded via a tag
-                       downloadBtn.href = link;
+                       // HLS Downloader Logic
+                       downloadBtn.removeAttribute('href');
+                       downloadBtn.removeAttribute('download');
+                       downloadBtn.onclick = (e) => {
+                           e.preventDefault();
+                           downloadHlsStream(link, \`Dramabox_Eps_\${currentEps + 1}.ts\`);
+                       };
                     } else {
                        downloadBtn.href = sourceUrl;
+                       downloadBtn.onclick = null;
+                       downloadBtn.setAttribute('download', \`Video_Eps_\${currentEps + 1}.mp4\`);
                     }
                 }
 
